@@ -1,46 +1,98 @@
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 #include "linear_regression.h"
+
+#define MAX_SAMPLES (5)
+#define MAX_VERIFICATION (2)
 
 static double calc_error(const double expected, const double actual);
 static double sim_flow_meter(const int pulses);
+static double sim_read_flask(double real_measurement);
 
 int main ()
 {
-    lg_point_t test_points[] = 
-    {
-        {1.5, 40},
-        {2, 50},
-        {4.2, 55},
-        {5, 60}
-    };
+    lg_online_line_t trainer;
+    lg_point_t initial_pool[MAX_SAMPLES];
+    lg_point_t feedback_pool[MAX_VERIFICATION];
+    const lg_line_t* temp_line = NULL;
+    int samples_collected = 0;
 
-    lg_line_t test_line;
+    srand(time(NULL));
 
-    lg_line_build(&test_line, sizeof(test_points) / sizeof(test_points[0]), test_points);
-
-    printf("line is y = %f * x + %f\n", test_line.slope, test_line.intercept);
-
-    for ( int i = 0; i < ( sizeof(test_points) / sizeof(test_points[0]) ); i++ )
-    {
-        double plotted_y = lg_line_plot(&test_line, test_points[i].x);
-        printf("checking point (%f, %f)\t\t%f\t\t%%%f\n", test_points[i].x, test_points[i].y, plotted_y, calc_error(test_points[i].y, plotted_y));
-    }
-
-    while (!feof(stdin))
+    while (!feof(stdin) && (samples_collected < MAX_SAMPLES))
     {
         int pulses;
         double ml;
+        double observed_ml;
+
         printf("How many pulses do you want? > ");
-        scanf("%d", &pulses);
-        ml = sim_flow_meter(pulses);
-        printf("That's %f ml\n", ml);
+        if (scanf("%d", &pulses))
+        {
+            ml = sim_flow_meter(pulses);
+            observed_ml = sim_read_flask(ml);
+            printf("That's %lf ml, but you read it as %lf\n", ml, observed_ml);
+            initial_pool[samples_collected].x = pulses;
+            initial_pool[samples_collected].y = observed_ml;
+            samples_collected++;
+        }
+    }
+
+    lg_online_init(&trainer, MAX_SAMPLES, initial_pool);
+    temp_line = lg_online_getline(&trainer);
+    printf("came up with line y=(%lf)x+%lf\n", temp_line->slope, temp_line->intercept);
+
+    printf("\n\nnow type in verification samples\n\t(ctrl+D to quit)\n");
+    while (!feof(stdin))
+    {
+        int pulses;
+        double requested_ml = 0;
+        double ml;
+        double observed_ml;
+        double accuracy;
+
+        printf("How many ml do you want? > ");
+        if (scanf("%lf", &requested_ml))
+        {
+            pulses = (int) round(lg_line_plot_x(temp_line, requested_ml));
+            ml = sim_flow_meter(pulses);
+            observed_ml = sim_read_flask(ml);
+            printf("That's %lf ml, but you read it as %lf\n", ml, observed_ml);
+            accuracy = (fabs(requested_ml - ml) / requested_ml) * 100.0f;
+            printf("\tit was accurate to %lf%% accurate\n", accuracy);
+            accuracy = (fabs(requested_ml - observed_ml) / requested_ml) * 100.0f;
+            printf("\tit was observed to be %lf%% accurate\n", accuracy);
+        }
     }
 }
 
 double calc_error(const double expected, const double actual)
 {
     return fabs( (actual - expected) / expected);
+}
+
+static double sim_read_flask(double real_measurement)
+{
+    //range defined to simulate 2% accuracy of measuring vessel
+    //so on a 100ml flask, +- 1ml
+    static const int range_max = 100;
+    static const int range_min = -100;
+    int rn = rand();
+    int prefloat = (rn % (range_max - range_min + 1)) + range_min;
+    double error_measurement = real_measurement * (1.0f + ( (double) prefloat ) / 10000.0f);
+    //for 0-100ml, you can probably read it up to the closes half
+    if (error_measurement <= 100.0f)
+    {
+        error_measurement *= 2.0f;
+        error_measurement = round(error_measurement);
+        error_measurement /= 2.0f;
+    }
+    else
+    {
+        //for 101-500ml, you're going to need to round to the nearest ml
+        error_measurement = round(error_measurement);
+    }
+    return error_measurement;
 }
 
 static double sim_flow_meter(int pulses)
